@@ -2607,18 +2607,18 @@ redraw(void)
 	draw();
 }
 
-void autocomplete (const Arg * arg)
+void autocomplete (const Arg *arg)
 {
 	static _Bool active = 0;
 
-	int acmpl_cmdindex = arg -> i;
+	int acmpl_cmdindex = arg->i;
 
 	static int acmpl_cmdindex_prev;
 
 	if (active == 0)
 		acmpl_cmdindex_prev = acmpl_cmdindex;
 
-	static const char * const (acmpl_cmd []) = {
+	static const char * const (acmpl_cmd[]) = {
 		[ACMPL_DEACTIVATE]	= "__DEACTIVATE__",
 		[ACMPL_WORD]		= "word-complete",
 		[ACMPL_WWORD]		= "WORD-complete",
@@ -2630,232 +2630,171 @@ void autocomplete (const Arg * arg)
 		[ACMPL_UNDO]		= "__UNDO__",
 	};
 
-	static char acmpl [1000];		// ACMPL_ISSUE: why 1000?
+	static char acmpl[1000];
 
-	static FILE * acmpl_exec = NULL;
+	static FILE *acmpl_exec = NULL;
 	static int acmpl_status;
 
-	static const char * stbuffile;
-	static char target [1000];		// ACMPL_ISSUE: why 1000? dynamically allocate char array of size term.col
+	static const char *stbuffile;
+	static char target[1000];
 	static size_t targetlen;
 
-	static char completion [1000] = {0};		// ACMPL_ISSUE: why 1000? dynamically allocate char array of size term.col
-	static size_t complen_prev = 0;		// NOTE: always clear this variable after clearing completion
+	static char completion[1000] = {0};
+	static size_t complen_prev = 0;
 
 	static int cx, cy;
 
-	// ACMPL_ISSUE: crashes when term.row is too small
-
-// Check for deactivation
-
-	if (acmpl_cmdindex == ACMPL_DEACTIVATE)
-	{
-
-//     Deactivate autocomplete mode keeping current completion
-
-		if (active)
-		{
+	if (acmpl_cmdindex == ACMPL_DEACTIVATE) {
+		if (active) {
 			active = 0;
-			pclose (acmpl_exec);
-			remove (stbuffile);
+			pclose(acmpl_exec);
+			remove(stbuffile);
 
-			if (complen_prev)
-			{
-				selclear ();
+			if (complen_prev) {
+				selclear();
 				complen_prev = 0;
 			}
 		}
-
 		return;
 	}
 
-// Check for undo
-
-	if (acmpl_cmdindex == ACMPL_UNDO)
-	{
-
-//     Deactivate autocomplete mode recovering target
-
-		if (active)
-		{
+	if (acmpl_cmdindex == ACMPL_UNDO) {
+		if (active) {
 			active = 0;
-			pclose (acmpl_exec);
-			remove (stbuffile);
+			pclose(acmpl_exec);
+			remove(stbuffile);
 
-			if (complen_prev)
-			{
-				selclear ();
+			if (complen_prev) {
+				selclear();
 				for (size_t i = 0; i < complen_prev; i++)
-					ttywrite ((char []) { '\b' }, 1, 1);	// ACMPL_ISSUE: I'm not sure that this is the right way
+					ttywrite((char[]) {'\b'}, 1, 1);
 				complen_prev = 0;
-				ttywrite (target, targetlen, 0);		// ACMPL_ISSUE: I'm not sure that this is a right solution
+				ttywrite(target, targetlen, 0);
 			}
 		}
-
 		return;
 	}
 
-// Check for command change
-
-	if (acmpl_cmdindex != acmpl_cmdindex_prev)
-	{
-
-//     If command is changed, goto acmpl_begin avoiding rewriting st buffer
-
-		if (active)
-		{
+	if (acmpl_cmdindex != acmpl_cmdindex_prev) {
+		if (active) {
 			acmpl_cmdindex_prev = acmpl_cmdindex;
-
 			goto acmpl_begin;
 		}
 	}
 
-// If not active
-
-	if (active == 0)
-	{
+	if (active == 0) {
 		acmpl_cmdindex_prev = acmpl_cmdindex;
 		cx = term.c.x;
 		cy = term.c.y;
 
-//     Write st buffer to a temp file
+		char stbuffile_template[] = "/tmp/stXXXXXX";
+		int stbuffile_fd = mkstemp(stbuffile_template);
+		if (stbuffile_fd == -1) {
+			perror("mkstemp");
+			exit(EXIT_FAILURE);
+		}
+		stbuffile = stbuffile_template;
 
-		stbuffile = tmpnam (NULL);		// ACMPL_ISSUE: check for return value ...
-										// ACMPL_ISSUE: use coprocesses instead of temp files
-
-		FILE * stbuf = fopen (stbuffile, "w"); // ACMPL_ISSUE: check for opening error ...
-		char * stbufline = malloc (term.col + 2); // ACMPL_ISSUE: check for allocating error ...
+		FILE *stbuf = fdopen(stbuffile_fd, "w");
+		if (!stbuf) {
+			perror("fdopen");
+			close(stbuffile_fd);
+			exit(EXIT_FAILURE);
+		}
+		char *stbufline = malloc(term.col + 2);
+		if (!stbufline) {
+			perror("malloc");
+			fclose(stbuf);
+			remove(stbuffile);
+			exit(EXIT_FAILURE);
+		}
 
 		int cxp = 0;
-
-		for (size_t y = 0; y < term.row; y++)
-		{
+		for (size_t y = 0; y < term.row; y++) {
 			if (y == term.c.y) cx += cxp * term.col;
 
 			size_t x = 0;
 			for (; x < term.col; x++)
-				utf8encode (term.line [y] [x].u, stbufline + x);
-			if (term.line [y] [x - 1].mode & ATTR_WRAP)
-			{
+				utf8encode(term.line[y][x].u, stbufline + x);
+			if (term.line[y][x - 1].mode & ATTR_WRAP) {
 				x--;
 				if (y <= term.c.y) cy--;
 				cxp++;
-			}
-			else
-			{
-				stbufline [x] = '\n';
+			} else {
+				stbufline[x] = '\n';
 				cxp = 0;
 			}
-			stbufline [x + 1] = 0;
-			fputs (stbufline, stbuf);
+			stbufline[x + 1] = 0;
+			fputs(stbufline, stbuf);
 		}
 
-		free (stbufline);
-		fclose (stbuf);
+		free(stbufline);
+		fclose(stbuf);
 
 acmpl_begin:
 
-//     Run st-autocomplete
-
-		sprintf (
+		sprintf(
 			acmpl,
-			"cat %100s | st-autocomplete %500s %d %d",	// ACMPL_ISSUE: why 100 and 500?
+			"cat %100s | st-autocomplete %500s %d %d",
 			stbuffile,
-			acmpl_cmd [acmpl_cmdindex],
+			acmpl_cmd[acmpl_cmdindex],
 			cy,
 			cx
 		);
 
-		acmpl_exec = popen (acmpl, "r");		// ACMPL_ISSUE: popen isn't defined by The Standard. Does it work in BSDs for example?
-												// ACMPL_ISSUE: check for popen error ...
+		acmpl_exec = popen(acmpl, "r");
 
-//     Read the target, targetlen
-
-		fscanf (acmpl_exec, "%500s\n", target); // ACMPL_ISSUE: check for scanning error ...
-		targetlen = strlen (target);
+		fscanf(acmpl_exec, "%500s\n", target);
+		targetlen = strlen(target);
 	}
 
-// Read a completion if exists (acmpl_status)
-
 	unsigned line, beg, end;
+	acmpl_status = fscanf(acmpl_exec, "%500[^\n]\n%u\n%u\n%u\n", completion, &line, &beg, &end);
 
-	acmpl_status = fscanf (acmpl_exec, "%500[^\n]\n%u\n%u\n%u\n", completion, & line, & beg, & end);
-												// ACMPL_ISSUE: why 500? use term.col instead
-
-// Exit if no completions found
-
-	if (active == 0 && acmpl_status == EOF)
-	{
-
-//    Close st-autocomplete and exit without activating the autocomplete mode
-
-		pclose (acmpl_exec);
-		remove (stbuffile);
+	if (active == 0 && acmpl_status == EOF) {
+		pclose(acmpl_exec);
+		remove(stbuffile);
 		return;
 	}
 
-// If completions found, enable autocomplete mode and autocomplete the target
-
 	active = 1;
 
-// Clear target before first completion
-
-	if (complen_prev == 0)
-	{
+	if (complen_prev == 0) {
 		for (size_t i = 0; i < targetlen; i++)
-			ttywrite ((char []) { '\b' }, 1, 1);	// ACMPL_ISSUE: I'm not sure that this is a right solution
-	}
-
-// Clear previuos completion if this is not the first
-
-	else
-	{
-		selclear ();
+			ttywrite((char[]) {'\b'}, 1, 1);
+	} else {
+		selclear();
 		for (size_t i = 0; i < complen_prev; i++)
-			ttywrite ((char []) { '\b' }, 1, 1);	// ACMPL_ISSUE: I'm not sure that this is a right solution
+			ttywrite((char[]) {'\b'}, 1, 1);
 		complen_prev = 0;
 	}
 
-// If no more completions found, reset and restart
-
-	if (acmpl_status == EOF)
-	{
+	if (acmpl_status == EOF) {
 		active = 0;
-		pclose (acmpl_exec);
-		ttywrite (target, targetlen, 0);
+		pclose(acmpl_exec);
+		ttywrite(target, targetlen, 0);
 		goto acmpl_begin;
 	}
 
-// Count wrapped lines before the current line
-
 	int wl = 0;
-
 	int tl = line;
-
 	for (int l = 0; l < tl; l++)
-		if (term.line [l] [term.col - 1].mode & ATTR_WRAP)
-		{
+		if (term.line[l][term.col - 1].mode & ATTR_WRAP) {
 			wl++;
 			tl++;
 		}
 
-// Autcomplete
+	complen_prev = strlen(completion);
+	ttywrite(completion, complen_prev, 0);
 
-	complen_prev = strlen (completion);
-	ttywrite (completion, complen_prev, 0);
-
-	if (line == cy && beg > cx)
-	{
+	if (line == cy && beg > cx) {
 		beg += complen_prev - targetlen;
 		end += complen_prev - targetlen;
-
-		// ACMPL_ISSUE: highlignthing doesn't work when "line == cy && beg > cx",
-		//				but coordinates are correct...
 	}
 
 	end--;
 
-	selstart (beg % term.col, line + wl + beg / term.col, 0);
-	selextend (end % term.col, line + wl + end / term.col, 1, 0);
-	xsetsel (getsel ());
+	selstart(beg % term.col, line + wl + beg / term.col, 0);
+	selextend(end % term.col, line + wl + end / term.col, 1, 0);
+	xsetsel(getsel());
 }
